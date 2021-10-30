@@ -46,7 +46,11 @@ def parse_tex_from_tar(file_path):
         tex_files = [t for t in f.getnames() if t.endswith('.tex')]
         res = ''
         for tex in tex_files:
-            res += f.extractfile(tex).read().decode('utf-8')
+            tmp = f.extractfile(tex).read()
+            try:
+                res += tmp.decode('utf-8')
+            except:
+                res += tmp.decode('cp1250').encode().decode('utf-8')
     return res
 
 def parse_sections_from_tex(raw_tex: str):
