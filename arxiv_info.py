@@ -1,3 +1,6 @@
+from genericpath import exists
+from sre_constants import SUCCESS
+import tarfile
 from selenium.common import exceptions
 import feedparser
 import re
@@ -10,6 +13,7 @@ import pandas as pd
 import requests
 import warnings
 import Levenshtein
+import utils
 from utils import log
 from tqdm import tqdm
 from unidecode import unidecode
@@ -176,10 +180,7 @@ class ArxivSearcher:
         return result
 
 
-def main():
-    src_dir = './newdata/'
-    des_dir = './newdatafix/'
-    
+def search_paper_on_arxiv(src_dir, des_dir):
     driver = ProxyDriver('')
 
     src_excels = [file for file in os.listdir(src_dir) if file.endswith('.xls')]
@@ -206,5 +207,53 @@ def main():
         data['arxiv_link_assured'] = pd.Series(arxiv_link_assured_list)
         data.to_excel(des_dir + excel_name)
 
+def parse_content_from_arxiv(src_dir, des_dir, download_dir):
+    os.makedirs(des_dir, exist_ok=True)
+    os.makedirs(download_dir, exist_ok=True)
+
+    src_excels = [file for file in os.listdir(src_dir) if file.endswith('.xls')]
+    des_excels = set([file for file in os.listdir(des_dir) if file.endswith('.xls')])
+    for excel_name in src_excels:
+        if excel_name[4:8] < '2015':
+            continue
+        if excel_name in des_excels:
+            continue
+        log('Processing ' + excel_name)
+        data = pd.read_excel(src_dir + excel_name)
+        
+        all_tex_raw = []
+        all_pdf_raw = []
+        all_subsections = []
+        for title, pdf_link, arxiv_link, assured in tqdm(data[['title', 'pdf_link', 'arxiv_link', 'arxiv_link_assured']].values):
+            tex = ''
+            pdf_raw = ''
+            if str(arxiv_link) not in ['nan', '', ' '] and assured == 2:
+                try:
+                    time.sleep(random.random()*3 + 3)
+                    arxiv_id = arxiv_link.split('/')[-1]
+                    extra_data_link = f'https://arxiv.org/e-print/{arxiv_id}'
+                    target_path = os.path.join(download_dir, arxiv_id + '.tar')
+                    utils.download(extra_data_link, target_path)
+                    tex = utils.parse_tex_from_tar(target_path)
+                    subsections = utils.parse_sections_from_tex(tex)
+                except tarfile.ReadError:
+                    log(f'tar file open erro for {title}')
+            if not tex:
+                # no arxiv link found, we can parse text from pdf
+                target_path = os.path.join(download_dir, title + '.pdf')
+                utils.download(pdf_link, target_path)
+                pdf_raw, subsections = utils.parse_sections_from_pdf(target_path)
+            if not len(''.join(subsections)):
+                log(f'unable to get contents for {title}')
+            all_tex_raw.append(tex)
+            all_pdf_raw.append(pdf_raw)
+            all_subsections.append(';'.join(subsections))
+            utils.delete_path(target_path)
+        data['tex_raw'] = pd.Series(all_tex_raw)
+        data['pdf_raw'] = pd.Series(all_pdf_raw)
+        data['subsections'] = pd.Series(all_subsections)
+        data.to_excel(des_dir + excel_name)
+
 if __name__ == '__main__':
-    main()
+    # search_paper_on_arxiv('./newdata', './newdatafix')
+    parse_content_from_arxiv('./newdatafix/', './alldata/', './downloads/')
