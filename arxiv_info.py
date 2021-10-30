@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from genericpath import exists
 from sre_constants import SUCCESS
 import tarfile
@@ -14,7 +15,7 @@ import requests
 import warnings
 import Levenshtein
 import utils
-from utils import log
+from utils import log, parse_obj_debug
 from tqdm import tqdm
 from unidecode import unidecode
 from selenium import webdriver
@@ -212,15 +213,20 @@ def parse_content_from_arxiv(src_dir, des_dir, download_dir):
     os.makedirs(download_dir, exist_ok=True)
 
     src_excels = [file for file in os.listdir(src_dir) if file.endswith('.xls')]
-    des_excels = set([file for file in os.listdir(des_dir) if file.endswith('.xls')])
+    des_jsons = set([file for file in os.listdir(des_dir) if file.endswith('.json')])
     for excel_name in src_excels:
         if excel_name[4:8] < '2015':
             continue
-        if excel_name in des_excels:
+        json_name = excel_name.replace('.xls', '.json')
+        if json_name in des_jsons:
             continue
         log('Processing ' + excel_name)
         data = pd.read_excel(src_dir + excel_name)
-        
+        redundant_cols = [col for col in data.columns if col.startswith('Unnamed')]
+        data = data.drop(redundant_cols, axis=1)
+        for col in ['arxiv_link', 'supp_link', 'key_words']:
+            data[col] = data[col].apply(lambda x: str(x) if str(x) not in ['nan', '', ' '] else '')
+
         all_tex_raw = []
         all_pdf_raw = []
         all_subsections = []
@@ -229,31 +235,39 @@ def parse_content_from_arxiv(src_dir, des_dir, download_dir):
             pdf_raw = ''
             if str(arxiv_link) not in ['nan', '', ' '] and assured == 2:
                 try:
-                    time.sleep(random.random()*3 + 3)
                     arxiv_id = arxiv_link.split('/')[-1]
                     extra_data_link = f'https://arxiv.org/e-print/{arxiv_id}'
                     target_path = os.path.join(download_dir, arxiv_id + '.tar')
-                    utils.download(extra_data_link, target_path)
+                    if not os.path.exists(target_path):
+                        time.sleep(random.random()*3 + 3)
+                        utils.download(extra_data_link, target_path)
                     tex = utils.parse_tex_from_tar(target_path)
                     subsections = utils.parse_sections_from_tex(tex)
                 except tarfile.ReadError:
                     log(f'tar file open erro for {title}')
             if not tex:
                 # no arxiv link found, we can parse text from pdf
+                title = title.replace('/', ' ')
                 target_path = os.path.join(download_dir, title + '.pdf')
-                utils.download(pdf_link, target_path)
+                if not os.path.exists(target_path):
+                    utils.download(pdf_link, target_path)
                 pdf_raw, subsections = utils.parse_sections_from_pdf(target_path)
             if not len(''.join(subsections)):
                 log(f'unable to get contents for {title}')
             all_tex_raw.append(tex)
             all_pdf_raw.append(pdf_raw)
             all_subsections.append(';'.join(subsections))
-            utils.delete_path(target_path)
         data['tex_raw'] = pd.Series(all_tex_raw)
         data['pdf_raw'] = pd.Series(all_pdf_raw)
         data['subsections'] = pd.Series(all_subsections)
-        data.to_excel(des_dir + excel_name)
-
+        try:
+            result = data.to_dict('records')
+            json.dump(result, open(des_dir + json_name, 'w'), ensure_ascii=False)
+        except:
+            import pdb; pdb.set_trace()
+        for fname in os.listdir(download_dir):
+            utils.delete_path(os.path.join(download_dir, fname))
+        
 if __name__ == '__main__':
     # search_paper_on_arxiv('./newdata', './newdatafix')
     parse_content_from_arxiv('./newdatafix/', './alldata/', './downloads/')

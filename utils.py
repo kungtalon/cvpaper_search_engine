@@ -5,15 +5,15 @@ import os
 import sys
 import requests
 import tarfile as tar
-from pdfminer.pdfinterp import PDFResourceManager, PDFPageInterpreter
-from pdfminer.converter import TextConverter
-from pdfminer.layout import LAParams
-from pdfminer.pdfparser import PDFParser
-from pdfminer.pdfdocument import PDFDocument
-from pdfminer.pdfpage import PDFPage
-from pdfminer.converter import PDFPageAggregator
-from pdfminer import layout
-from io import StringIO
+from pdfminer3.pdfinterp import PDFResourceManager, PDFPageInterpreter
+from pdfminer3.converter import TextConverter
+from pdfminer3.layout import LAParams
+from pdfminer3.pdfparser import PDFParser
+from pdfminer3.pdfdocument import PDFDocument
+from pdfminer3.pdfpage import PDFPage
+from pdfminer3.converter import PDFPageAggregator
+from pdfminer3 import layout
+from io import StringIO, BytesIO
 
 
 logging.basicConfig(filename='./sections.log', filemode="a", level=logging.ERROR, format='%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
@@ -69,15 +69,15 @@ def extract_text_from_pdf(file_path):
     rsrcmgr = PDFResourceManager()
     retstr = StringIO()
     laparams = LAParams()
-    device =  TextConverter(rsrcmgr, retstr, laparams=laparams)
+    device =  TextConverter(rsrcmgr, retstr, codec='utf-8', laparams=laparams)
     with open(file_path, 'rb') as fp:
         interpreter = PDFPageInterpreter(rsrcmgr, device)
-        password = ""
+        password = ''
         maxpages = 0
         caching = True
         pagenos = set()
 
-        for page in PDFPage.get_pages(fp, pagenos, maxpages=maxpages, password=password,caching=caching, check_extractable=True):
+        for page in PDFPage.get_pages(fp, pagenos, maxpages=maxpages, password=password, caching=caching, check_extractable=True):
             interpreter.process_page(page)
 
         text = retstr.getvalue()
@@ -106,7 +106,7 @@ def createPDFDoc(fpath):
     if not document.is_extractable:
         raise "Not extractable"
     else:
-        return document
+        return fp, document
 
 
 def createDeviceInterpreter():
@@ -165,7 +165,7 @@ def parse_title_sections(path, debug=False):
     Only xxx-Bold and xxx-Medi are valid.
     '''
     res = []
-    document = createPDFDoc(path)
+    fp, document = createPDFDoc(path)
     device,interpreter = createDeviceInterpreter()
     pages = PDFPage.create_pages(document)
     for page in pages:
@@ -176,4 +176,5 @@ def parse_title_sections(path, debug=False):
         else:
             res.extend(parse_obj(layout._objs))
 
+    fp.close()
     return res
