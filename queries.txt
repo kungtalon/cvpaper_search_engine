@@ -1,9 +1,9 @@
 Vision Transformer
-representation learning
+unsupervised representation learning
 representation learning of point clouds
 graph neural networks
 self-attention mechanism
-3d rendering
+scalable neural networks
 3d reconstruction nerf
 generative models stylegan
 image classification residual networks
@@ -15,11 +15,11 @@ image inpainting generative
 partial point cloud registration
 model interpretability gradient based
 pixel-wise learning
-image signal processing
+robustness of convolutional neural networks
 human-object interaction
-semi-supervised learning in classification
+semi supervised learning in classification
 MLP-Mixer architecture
-super-resolution gan
+super resolution gan
 agent learn environment affordance
 spatial temporal data mining
 siamase architecture
