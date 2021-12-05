@@ -63,11 +63,11 @@ class FeatureExtractor():
         # author hit-rate, try bi-gram
         feature_extractor_funcs = {
             # 'feature_name': self.func,
-            'embedding_dists': self.cal_embedding_dists,
-            'put_embedding': self.put_embedding,
-            'pyterrier_score': self.pyteriier_score,
-            'doc_property': self.get_doc_property,
-            'author_name_match': self.match_author_name
+            'embedding_dists': self._cal_embedding_dists,
+            'put_embedding': self._put_embedding,
+            'pyterrier_score': self._pyteriier_score,
+            'doc_property': self._get_doc_property,
+            'author_name_match': self._match_author_name
         }
 
         self.data['features'] = self.data.apply(np.array([]))
@@ -77,7 +77,7 @@ class FeatureExtractor():
         
         return self.data[['features', 'label']]
 
-    def cal_embedding_dists(self):
+    def _cal_embedding_dists(self):
         series = []
         distances = {
             'dot': lambda x, y : x.dot(y),
