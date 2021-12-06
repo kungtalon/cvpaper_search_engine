@@ -47,7 +47,6 @@ class FeatureExtractor():
         feature_extractor_funcs = {
             # 'feature_name': self.func,
             'embedding_dists': self._cal_embedding_dists,
-            'put_embedding': self._put_embedding,
             'pyterrier_ranking': self._pyterrier_rank,
             'doc_property': self._get_doc_property,
             'author_name_match': self._match_author_name
@@ -70,17 +69,17 @@ class FeatureExtractor():
         for _, row in self.data.iterrows():
             title_embedding = row['title_embedding']
             abstract_embedding = row['abstract_embedding']
-            subsection_embedding = row['subsection_embedding']
-            if 'search_title' in self.user_args:
+            subsections_embedding = row['subsections_embedding']
+            if self.user_args['search_title']:
                 title_dists = [dist_func(self.query_embedding, title_embedding) for dist_func in distances.values()]
             else:
                 title_dists = [np.nan] * len(distances)
-            if 'search_abstract' in self.user_args:
+            if self.user_args['search_abstract']:
                 abstract_dists = [dist_func(self.query_embedding, abstract_embedding) for dist_func in distances.values()]
             else:
                 abstract_dists = [np.nan] * len(distances)
-            if 'search_subsection' in self.user_args:
-                subsection_dists = [dist_func(self.query_embedding, subsection_embedding) for dist_func in distances.values()]
+            if self.user_args['search_subsection']:
+                subsection_dists = [dist_func(self.query_embedding, subsections_embedding) for dist_func in distances.values()]
             else:
                 subsection_dists = [np.nan] * len(distances)
             series.append(np.array(title_dists + abstract_dists + subsection_dists))
@@ -105,9 +104,9 @@ class CVPaperIR():
         
     def _load_doc_embeddings(self, embedding_path):
         embed_df = pd.read_csv(embedding_path, sep=',')
-        embed_df.columns = ['docno', 'title_embedding', 'abstract_embedding', 'subsection_embedding']
+        embed_df.columns = ['docno', 'title_embedding', 'abstract_embedding', 'subsections_embedding']
         for i in range(1, 4):
-            embed_df.iloc[:, i] = embed_df.iloc[:, i].apply(lambda s: np.array(s.split(), dtype=np.float32))
+            embed_df.iloc[:, i] = embed_df.iloc[:, i].apply(lambda s: np.array(s.split(), dtype=np.float64))
         embed_df['docno'] = embed_df['docno'].astype('str')
         return embed_df
 
