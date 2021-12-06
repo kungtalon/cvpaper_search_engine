@@ -15,15 +15,15 @@ from os.path import join as pjoin
 FIELDS = ['title', 'abstract', 'subsections', 'authors']
 
 class FeatureExtractor():
-    def __init__(self, df, indexes, embedding_path, wv_path, user_args={}, json_path='', is_training=False):
+    def __init__(self, df, indexes, embed_df, query_embedding, user_args={}, json_path='', is_training=False):
         self.indexes = indexes
         self.user_args = user_args
         if is_training:
             self.data = self._load_training_data(json_path, df)
         else:
             self.data = self._load_inference_data(df)
-        self._load_doc_embeddings(embedding_path)
-        self.query_embedding = self._get_query_embedding(wv_path)
+        self.data = self.data.merge(embed_df, how='left', on='docno')
+        self.query_embedding = query_embedding
 
     def _load_training_data(self, json_path, df):
         file_names = os.listdir(json_path)
@@ -38,23 +38,6 @@ class FeatureExtractor():
     def _load_inference_data(self, df):
         pass
 
-    def _load_doc_embeddings(self, embedding_path):
-        pass
-
-    def _get_query_embedding(self, wv_path)
-        wv = KeyedVectors.load(wv_path, mmap='r')
-        ps = PorterStemmer()
-        # stop_words = set(stopwords.words('english'))
-        query = self.data['query'][0]
-        hyphen_words = re.findall('\w+-\w+', query)
-        hwords = reduce(lambda x, y: x + y, [[*word.split('-'), word.replace('-', '')] for word in hyphen_words])
-        q_list = [term.lower() for term in query.split() + hwords]
-        q_list = [ps.stem(term) for term in q_list]
-        embedding = np.sum([wv[term] for term in q_list if term in wv.vocab], axis=0)
-        if not isinstance(embedding, np.ndarray):
-            embedding = np.zeros(wv.vector_size)
-        return embedding
-
     def get_features(self):
         # missing values will be filled with np.nan
         # embeddings title, abstract, method 16d
@@ -65,7 +48,7 @@ class FeatureExtractor():
             # 'feature_name': self.func,
             'embedding_dists': self._cal_embedding_dists,
             'put_embedding': self._put_embedding,
-            'pyterrier_score': self._pyteriier_score,
+            'pyterrier_ranking': self._pyterrier_rank,
             'doc_property': self._get_doc_property,
             'author_name_match': self._match_author_name
         }
@@ -75,7 +58,7 @@ class FeatureExtractor():
             self.data['tmp'] = feature_extractor_funcs[feature_name]()
             self.data['features'] = self.data.apply(lambda x: np.concatenate(x['features'], x['tmp']), axis=1)
         
-        return self.data[['features', 'label']]
+        return self.data[['docno', 'features', 'label']]
 
     def _cal_embedding_dists(self):
         series = []
@@ -106,10 +89,10 @@ class FeatureExtractor():
 
 
 class CVPaperIR():
-    def __init__(self, index_rf):
+    def __init__(self, index_rf, wv_path):
         self.init_pt()
         self.index = pt.Data
-        self.bm
+        self.wv = KeyedVectors.load(wv_path, mmap='r')
 
     def init_pt(self):
         if not pt.started():
@@ -120,7 +103,26 @@ class CVPaperIR():
         bm25 = pt.BatchRetrieve(self.index, wmodel='BM25')
         return bm25.search(query)
         
+    def _load_doc_embeddings(self, embedding_path):
+        embed_df = pd.read_csv(embedding_path, sep=',')
+        embed_df.columns = ['docno', 'title_embedding', 'abstract_embedding', 'subsection_embedding']
+        for i in range(1, 4):
+            embed_df.iloc[:, i] = embed_df.iloc[:, i].apply(lambda s: np.array(s.split(), dtype=np.float32))
+        embed_df['docno'] = embed_df['docno'].astype('str')
+        return embed_df
 
+    def _get_query_embedding(self, query):
+        ps = PorterStemmer()
+        # stop_words = set(stopwords.words('english'))
+        # no filtering of stop words for query
+        hyphen_words = re.findall('\w+-\w+', query)
+        hwords = reduce(lambda x, y: x + y, [[*word.split('-'), word.replace('-', '')] for word in hyphen_words])
+        q_list = [term.lower() for term in query.split() + hwords]
+        q_list = [ps.stem(term) for term in q_list]
+        embedding = np.sum([self.wv[term] for term in q_list if term in self.wv.vocab], axis=0)
+        if not isinstance(embedding, np.ndarray):
+            embedding = np.zeros(self.wv.vector_size)
+        return embedding
 
     def recall_post_processing(self, ):
         pass
@@ -166,3 +168,6 @@ class CVPaperIR():
         fnames=["BM25", "SDM", 'coronavirus covid', 'title', "2020", "hasDoi", "CoordinateMatch"]
 
         # acquire embeddings
+
+    def search(self, query):
+        # main function
