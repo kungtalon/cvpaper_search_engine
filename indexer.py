@@ -11,6 +11,7 @@ from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from gensim.models import KeyedVectors
 from os.path import join as pjoin
+from spelling_corrector import SpellingCorrector
 
 
 FIELDS = ['title', 'abstract', 'subsections', 'authors']
@@ -72,30 +73,21 @@ class FeatureExtractor():
             'euclidean': lambda x, y : np.linalg.norm(x - y)
         }
         for _, row in self.data.iterrows():
-            title_embedding = row['title_embedding']
-            abstract_embedding = row['abstract_embedding']
-            subsections_embedding = row['subsections_embedding']
+            cur_dists = []
             query_embedding = self.query_embeddings_dict[row['qid']]
-            if self.user_args['search_title']:
-                title_dists = [dist_func(query_embedding, title_embedding) for dist_func in distances.values()]
-            else:
-                title_dists = [np.nan] * len(distances)
-            if self.user_args['search_abstract']:
-                abstract_dists = [dist_func(query_embedding, abstract_embedding) for dist_func in distances.values()]
-            else:
-                abstract_dists = [np.nan] * len(distances)
-            if self.user_args['search_subsection']:
-                subsection_dists = [dist_func(query_embedding, subsections_embedding) for dist_func in distances.values()]
-            else:
-                subsection_dists = [np.nan] * len(distances)
-            series.append(np.array(title_dists + abstract_dists + subsection_dists))
+            for field in FIELDS[:3]:
+                if self.user_args['search_' + field]:
+                    dists = [dist_func(query_embedding, row[field + '_embedding']) for dist_func in distances.values()]
+                else:
+                    dists = [np.nan] * len(distances)
+                cur_dists.extend(dists)
+            series.append(np.array(cur_dists))
         return pd.Series(series)
 
 
-
 class PaperRetrieval():
-    def __init__(self, index_root, wv_path, embedding_path, 
-                 doc_path='./cleandatanew.pkl', json_path='', model_path=''):
+    def __init__(self, index_root, wv_path, embedding_path, doc_path='./cleandatanew.pkl', 
+                 json_path='', model_path='', args={}):
         # init: initialize pyterrier, load dataframes of embeddings and document texts ...
         self._init_pt()
         self.indexes = {}
@@ -106,36 +98,43 @@ class PaperRetrieval():
             self.indexes[field] = pt.IndexFactory.of(index_rf)
         self.wv = KeyedVectors.load(wv_path, mmap='r')
         self.doc_embeddings = self._load_doc_embeddings(embedding_path)
+        self.spelling_corrector = SpellingCorrector('./corpus.pkl')
         with open(doc_path, 'rb') as f:
             self.doc_text = pkl.load(f)
+            self.doc_text['docno'] = self.doc_text['docno'].astype('str')
         self.user_args = {
             # define the default settings for our search engine filter
+            'no_l2r': False,
+            'recall_cutoff': 50,
             'search_title': True,
             'search_abstract': True,
-            'search_subsection': True,
+            'search_subsections': True,
+            'search_authors': True,
             'conference': None,
-            'year': None,
-            'must_have_supp': False
+            'start_year': 0,
+            'end_year': 9999,
+            'must_have_supp': False,
+            'recall_weights': [0.5, 0.4, 0.1, 1]
         }
-        self.model = lgb.LGBMRanker(
-            task="train",
-            silent=True,
-            min_child_samples=1,
-            num_leaves=31,
-            max_depth=5,
-            objective="lambdarank",
-            metric="ndcg",
-            learning_rate= 0.1,
-            importance_type="gain",
-            num_iterations=100
-        )
+        self.user_args.update(args)
 
-        if not json_path and not model_path:
-            raise ValueError('Must indicate the path for training data or pretrained model')
-        if model_path:
-            self.model = self._build_model(model_path)
-        else:
-            self.model = self._train(json_path)
+        if not self.user_args['no_l2r']:
+            if model_path:
+                self.model = self._build_model(model_path)
+            else:
+                self.model = lgb.LGBMRanker(
+                    task="train",
+                    silent=True,
+                    min_child_samples=1,
+                    num_leaves=31,
+                    max_depth=5,
+                    objective="lambdarank",
+                    metric="ndcg",
+                    learning_rate= 0.1,
+                    importance_type="gain",
+                    num_iterations=100
+                )
+                self._train(json_path)
 
     def _init_pt(self):
         if not pt.started():
@@ -144,22 +143,48 @@ class PaperRetrieval():
     def _do_recall(self, query):
         # get a list of related documents by BM25
         # return : DataFrame
-        bm25 = pt.BatchRetrieve(self.index, wmodel='BM25')
-        return bm25.search(query)
+        results = []
+        for i, field in enumerate(FIELDS):
+            if not self.user_args['search_' + field]:
+                continue
+            br = pt.BatchRetrieve(self.indexes[field], wmodel="BM25")
+            result = br.transform(query)
+            result['score'] *= self.user_args['recall_weights'][i]
+            results.append(result)
+        merged_scores = pd.concat(results).groupby(['qid', 'query', 'docno']).sum('score').reset_index()
+        return merged_scores
         
     def _load_doc_embeddings(self, embedding_path):
         embed_df = pd.read_csv(embedding_path, sep=',')
+        dim = self.wv.vector_size
         for i in range(1, 4):
-            embed_df.iloc[:, i] = embed_df.iloc[:, i].apply(lambda s: np.array(s.split(), dtype=np.float64))
+            embed_df.iloc[:, i] = embed_df.iloc[:, i].apply(lambda s: np.array(s.split(), dtype=np.float64) if s != '0 . 0' else np.zeros(dim))
         embed_df['docno'] = embed_df['docno'].astype('str')
         return embed_df
 
     def _spelling_correct(self, query):
-        pass
+        original_words = re.findall(r'\w+', query.lower())
+        corrections = [self.spelling_corrector.correction(w) for w in original_words]
+        return ' '.join(corrections)
 
     def _recall_post_processing(self, recall_results):
+        # filter invalid documents
+        # take only top 50 documents for l2r
         # remember to join with the embeddings
-        pass
+        filter_idx1 = self.doc_text['year'] >= self.user_args['start_year']
+        filter_idx2 = self.doc_text['year'] <= self.user_args['end_year']
+        filter_idx = np.bitwise_and(filter_idx1, filter_idx2)
+        if self.user_args['conference'] is not None:
+            filter_idx3 = self.doc_text['conference'].apply(lambda r: self.user_args['conference'] == r['conference'], axis=1)
+            filter_idx = np.bitwise_and(filter_idx, filter_idx3)
+        valid_text = self.doc_text.loc[filter_idx, 'docno']
+        filtered_results = recall_results.merge(valid_text, how='inner', on='docno')
+        sorted_results = filtered_results.sort_values(by='score', ascending=False).reset_index()
+        cutoff_results = sorted_results[:self.user_args['recall_cutoff']]
+        if not self.user_args['no_l2r']:
+            results = cutoff_results.merge(self.doc_embeddings, how='left', on='docno')
+            return results
+        return cutoff_results
 
     def _get_training_data(self, json_root):
         # get the training query-doc pairs from the json files
@@ -172,12 +197,12 @@ class PaperRetrieval():
             dfs.append(json_df)
         pairs = pd.concat(dfs, ignore_index=True)
         queries = pd.unique(pairs['query'])
-        qids = {queries[qid]: qid for qid in range(len(queries))}
+        qids = {queries[qid]: qid for qid in range(1, len(queries)+1)}
         queries = pd.DataFrame({'qid': queries.apply(qids), 'query':queries})
         base_df = self._do_recall(queries)
-        data = pairs.merge(base_df, how='left', on='docno')
+        data = pairs.merge(base_df, how='left', on=['docno', 'query'])
         data = data.merge(self.doc_embeddings, how='left', on='docno')
-        return data[: len(train_file_names)], data[len(train_file_names):]
+        return data[: len(train_file_names)], data[len(train_file_names) :]
 
     def _build_model(self, model_path):
         if not os.path.exists(model_path):
@@ -209,7 +234,7 @@ class PaperRetrieval():
     def _merge_meta_data(self, rank_results):
         return rank_results.merge(self.doc_text, how='left', on='docno')
 
-    def search(self, query, args):
+    def search(self, query, args={}):
         # main function
         # do_recall: retrieve a list of relevant documents by BM25
         # recall_post_processing: filter out invalid docs according to user args
@@ -219,14 +244,24 @@ class PaperRetrieval():
             raise TypeError(f'Expected input type of str, get input {type(query)}')
         self.user_args.update(args)
         query = self._spelling_correct(query)
-        query_df = pd.DataFrame({'qid': 1, 'query': query})
+        query_df = pd.DataFrame({'qid': [1], 'query': [query]})
         recall_results = self._recall_post_processing(self._do_recall(query_df))
         
-        feature_extractor = FeatureExtractor(recall_results, self.indexes, self.wv, self.user_args)
-        feats = feature_extractor.get_features()
-        preds = self.model.predict(feats)
-        sort_idx = np.argsort(preds)[::-1]
-        rank_results = recall_results[sort_idx].reset_index(drop=True)
+        if self.user_args['no_l2r']:
+            rank_results = recall_results
+        else:
+            feature_extractor = FeatureExtractor(recall_results, self.indexes, self.wv, self.user_args)
+            feats = feature_extractor.get_features()
+            preds = self.model.predict(feats)
+            sort_idx = np.argsort(preds)[::-1]
+            rank_results = recall_results[sort_idx].reset_index(drop=True)
         
         results = self._merge_meta_data(rank_results)
         return results[['docno', 'title', 'authors', 'abstract']]
+
+if __name__ == '__main__':
+    args = {
+        'no_l2r': True
+    }
+    ir = PaperRetrieval(index_root='./index', wv_path='./word2vec.wv', embedding_path='./word2vec_embedding_df.csv', args=args)
+    print(ir.search('batch normalization')[:10])
