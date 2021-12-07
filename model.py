@@ -1,2 +1,0 @@
-import pyterrier as pt
-

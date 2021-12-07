@@ -229,4 +229,4 @@ class PaperRetrieval():
         rank_results = recall_results[sort_idx].reset_index(drop=True)
         
         results = self._merge_meta_data(rank_results)
-        return results['docno', 'title', 'authors', 'abstract']
+        return results[['docno', 'title', 'authors', 'abstract']]
