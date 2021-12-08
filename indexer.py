@@ -18,7 +18,7 @@ FIELDS = ['title', 'abstract', 'subsections', 'authors']
 
 class FeatureExtractor():
     def __init__(self, df, indexes, word2vec, user_args={}, is_training=False):
-        self.indexes = indexes
+        self.indexes = indexes  #dictionary, key is the field_name, value is the corresponding index
         self.user_args = user_args
         self.data = df
         self.query_embeddings_dict = self._get_query_embedding(word2vec)
@@ -45,7 +45,7 @@ class FeatureExtractor():
     def get_features(self):
         # missing values will be filled with np.nan
         # embeddings title, abstract, method 16d
-        # title, abstract, method bm25 tf-idf CoordinateMatch
+        # title, abstract, subsection, method bm25 tf-idf CoordinateMatch
         # publish time, conference, is_workshop, has_supp, 
         # author hit-rate, try bi-gram
         feature_extractor_funcs = {
@@ -84,6 +84,62 @@ class FeatureExtractor():
             series.append(np.array(cur_dists))
         return pd.Series(series)
 
+    def _pyterrier_rank(self):
+        # field: title, abstract, subsection
+        # method: bm25 tf-idf CoordinateMatch
+        methods = ["TF_IDF", "BM25", "CoordinateMatch"]
+        res_df = pd.DataFrame()
+        for field in FIELDS[:-1]:
+            pipeline =(
+                pt.BatchRetrieve(self.indexes[field], wmodel=methods[0])
+                **
+                pt.BatchRetrieve(self.indexes[field], wmodel=methods[1])
+                **
+                pt.BatchRetrieve(self.indexes[field], wmodel=methods[2])
+            )
+            res_df[field] = pipeline.transform(self.data)['features']
+        res = res_df.apply(lambda x: np.concatenate(x[[0,1,2]]),axis = 1)
+        return res
+
+    def _get_doc_property(self):
+        # publish time, conference, is_workshop, has_supp,
+        pipeline = (
+            (pt.apply.doc_score(lambda row: int(row["year"])))
+            **
+            (pt.apply.doc_score(lambda row: int(row["conference"]=="CVPR")))  #CVPR:1,ICCV:0
+            **
+            (pt.apply.doc_score(lambda row: int(row["workshop"]!='')))
+            **
+            (pt.apply.doc_score(lambda row: int(row["supp_link"]!='')))
+        )
+        res = pipeline.transform(self.data)['features']
+        return res
+
+    def _match_author_name(self):
+        # author hit-rate, try unigram and bi-gram
+        def hit_rate(row):
+            res = 0
+            query = row['query'].split()
+            authors = set(row['author'].split(', '))
+            for i in range(len(query)):
+                if i != len(query)-1:
+                    for author in authors:
+                        #uni_hit
+                        tmp = author.split()
+                        if query[i] in tmp:
+                            res+=1
+                    #bi_hit
+                    if (query[i]+" "+query[i+1]) in authors:
+                        res+=1
+                else:
+                    for author in authors:
+                        #uni_hit
+                        tmp = author.split()
+                        if query[i] in tmp:
+                            res+=1
+            return np.array([res])
+        author_hit = self.data.apply(lambda row:hit_rate(row), axis=1)
+        return  author_hit
 
 class PaperRetrieval():
     def __init__(self, index_root, wv_path, embedding_path, doc_path='./cleandatanew.pkl', 
