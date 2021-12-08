@@ -56,10 +56,11 @@ class FeatureExtractor():
             'author_name_match': self._match_author_name
         }
 
-        self.data['features'] = self.data.apply(np.array([]))
-        for feature_name in feature_extractor_funcs.keys():
-            self.data['tmp'] = feature_extractor_funcs[feature_name]()
-            self.data['features'] = self.data.apply(lambda x: np.concatenate(x['features'], x['tmp']), axis=1)
+        features = pd.DataFrame()
+        for feature_name, feature_transform in feature_extractor_funcs.items():
+            features[feature_name] = feature_transform()
+        
+        self.data['features'] = features.apply(lambda x: np.concatenate(x.values), axis=1)
         
         if self.is_training:
             return self.data[['docno', 'features', 'label']]
@@ -138,8 +139,9 @@ class FeatureExtractor():
                         if query[i] in tmp:
                             res+=1
             return np.array([res])
-        author_hit = self.data.apply(lambda row:hit_rate(row), axis=1)
+        author_hit = self.data.apply(hit_rate, axis=1)
         return  author_hit
+
 
 class PaperRetrieval():
     def __init__(self, index_root, wv_path, embedding_path, doc_path='./cleandatanew.pkl', 
