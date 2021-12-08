@@ -272,6 +272,7 @@ class PaperRetrieval():
     def _train(self, json_root):
         # load the training pair-doc pairs from the jsons
         train_data, val_data = self._get_training_data(json_root)
+        train_data, val_data = self._merge_meta_data(train_data), self._merge_meta_data(val_data)
         train_fe = FeatureExtractor(train_data, self.indexes, self.wv, self.user_args, True)
         train_features = train_fe.get_features()
         val_fe = FeatureExtractor(val_data, self.indexes, self.wv, self.user_args, True)
@@ -303,17 +304,15 @@ class PaperRetrieval():
         query_df = pd.DataFrame({'qid': [1], 'query': [query]})
         recall_results = self._recall_post_processing(self._do_recall(query_df))
         
-        if self.user_args['no_l2r']:
-            rank_results = recall_results
-        else:
-            feature_extractor = FeatureExtractor(recall_results, self.indexes, self.wv, self.user_args)
+        rank_results = self._merge_meta_data(recall_results)
+        if not self.user_args['no_l2r']:
+            feature_extractor = FeatureExtractor(rank_results, self.indexes, self.wv, self.user_args)
             feats = feature_extractor.get_features()
             preds = self.model.predict(feats)
             sort_idx = np.argsort(preds)[::-1]
-            rank_results = recall_results[sort_idx].reset_index(drop=True)
+            rank_results = rank_results[sort_idx].reset_index(drop=True)
         
-        results = self._merge_meta_data(rank_results)
-        return results[['docno', 'title', 'authors', 'abstract']]
+        return rank_results[['docno', 'title', 'authors', 'abstract']]
 
 if __name__ == '__main__':
     args = {
