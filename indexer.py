@@ -91,14 +91,17 @@ class FeatureExtractor():
         methods = ["TF_IDF", "BM25", "CoordinateMatch"]
         res_df = pd.DataFrame()
         for field in FIELDS[:-1]:
-            pipeline =(
-                pt.BatchRetrieve(self.indexes[field], wmodel=methods[0])
-                **
-                pt.BatchRetrieve(self.indexes[field], wmodel=methods[1])
-                **
-                pt.BatchRetrieve(self.indexes[field], wmodel=methods[2])
-            )
-            res_df[field] = pipeline.transform(self.data)['features']
+            if self.user_args['search_' + field]:
+                pipeline =(
+                    pt.BatchRetrieve(self.indexes[field], wmodel=methods[0])
+                    **
+                    pt.BatchRetrieve(self.indexes[field], wmodel=methods[1])
+                    **
+                    pt.BatchRetrieve(self.indexes[field], wmodel=methods[2])
+                )
+                res_df[field] = pipeline.transform(self.data)['features']
+            else:
+                res_df[field] = self.data.apply(lambda _: np.array([np.nan]*len(methods)), axis=1)
         res = res_df.apply(lambda x: np.concatenate(x[[0,1,2]]),axis = 1)
         return res
 
