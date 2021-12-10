@@ -3,7 +3,6 @@ import re
 import numpy as np
 import pandas as pd
 import pyterrier as pt
-import lightgbm as lgb
 import pickle as pkl
 from functools import reduce
 from nltk.stem import PorterStemmer
@@ -12,6 +11,7 @@ from nltk.tokenize import word_tokenize
 from gensim.models import KeyedVectors
 from os.path import join as pjoin
 from spelling_corrector import SpellingCorrector
+from lightgbm import LGBMRanker
 
 
 FIELDS = ['title', 'abstract', 'subsections', 'authors']
@@ -30,10 +30,10 @@ class FeatureExtractor():
         # no filtering of stop words for query
         def transform_query(query):
             hyphen_words = re.findall('\w+-\w+', query)
-            hwords = reduce(lambda x, y: x + y, [[*word.split('-'), word.replace('-', '')] for word in hyphen_words])
+            hwords = reduce(lambda x, y: x + y, [[*word.split('-'), word.replace('-', '')] for word in hyphen_words], [])
             q_list = [term.lower() for term in query.split() + hwords]
             q_list = [ps.stem(term) for term in q_list]
-            embedding = np.sum([word2vec[term] for term in q_list if term in word2vec.vocab], axis=0)
+            embedding = np.sum([word2vec[term] for term in q_list if term in word2vec.key_to_index], axis=0)
             if not isinstance(embedding, np.ndarray):
                 embedding = np.zeros(word2vec.vector_size)
             return embedding
@@ -63,14 +63,14 @@ class FeatureExtractor():
         self.data['features'] = features.apply(lambda x: np.concatenate(x.values), axis=1)
         
         if self.is_training:
-            return self.data[['docno', 'features', 'label']]
+            return self.data[['qid', 'docno', 'features', 'label']]
         return self.data[['docno', 'features']]
  
     def _cal_embedding_dists(self):
         series = []
         distances = {
             'dot': lambda x, y : x.dot(y),
-            'cos': lambda x, y : x.dot(y) / np.linalg.norm(x) / np.linalg.norm(y),
+            'cos': lambda x, y : x.dot(y) / (np.linalg.norm(x) * np.linalg.norm(y) + 1e-9),
             'euclidean': lambda x, y : np.linalg.norm(x - y)
         }
         for _, row in self.data.iterrows():
@@ -93,11 +93,11 @@ class FeatureExtractor():
         for field in FIELDS[:-1]:
             if self.user_args['search_' + field]:
                 pipeline =(
-                    pt.BatchRetrieve(self.indexes[field], wmodel=methods[0])
+                    pt.text.scorer(body_attr=field, wmodel=methods[0])
                     **
-                    pt.BatchRetrieve(self.indexes[field], wmodel=methods[1])
+                    pt.text.scorer(body_attr=field, wmodel=methods[1])
                     **
-                    pt.BatchRetrieve(self.indexes[field], wmodel=methods[2])
+                    pt.text.scorer(body_attr=field, wmodel=methods[2])
                 )
                 res_df[field] = pipeline.transform(self.data)['features']
             else:
@@ -124,7 +124,7 @@ class FeatureExtractor():
         def hit_rate(row):
             res = 0
             query = row['query'].split()
-            authors = set(row['author'].split(', '))
+            authors = set(row['authors'].split(', '))
             for i in range(len(query)):
                 if i != len(query)-1:
                     for author in authors:
@@ -163,7 +163,7 @@ class PaperRetrieval():
         with open(doc_path, 'rb') as f:
             self.doc_text = pkl.load(f)
             self.doc_text['docno'] = self.doc_text['docno'].astype('str')
-        self.user_args = {
+        self.const_user_args = {
             # define the default settings for our search engine filter
             'no_l2r': False,
             'recall_cutoff': 50,
@@ -177,25 +177,26 @@ class PaperRetrieval():
             'must_have_supp': False,
             'recall_weights': [0.5, 0.4, 0.1, 1]
         }
-        self.user_args.update(args)
+        self.const_user_args.update(args)
+        self.user_args = self.const_user_args.copy()
 
         if not self.user_args['no_l2r']:
-            if model_path:
-                self.model = self._build_model(model_path)
+            if model_path != '' and os.path.exists(model_path):
+                self._build_model(model_path)
             else:
-                self.model = lgb.LGBMRanker(
+                self.model = LGBMRanker(
                     task="train",
                     silent=True,
                     min_child_samples=1,
-                    num_leaves=31,
-                    max_depth=5,
+                    num_leaves=24,
+                    max_depth=4,
                     objective="lambdarank",
                     metric="ndcg",
                     learning_rate= 0.1,
                     importance_type="gain",
                     num_iterations=100
                 )
-                self._train(json_path)
+                self._train(json_path, model_path)
 
     def _init_pt(self):
         if not pt.started():
@@ -250,48 +251,88 @@ class PaperRetrieval():
     def _get_training_data(self, json_root):
         # get the training query-doc pairs from the json files
         # remember to join with the embeddings
-        train_file_names = os.listdir(pjoin(json_root), 'train')
-        val_file_names = os.listdir(pjoin(json_root), 'val')
+        train_file_names = os.listdir(pjoin(json_root, 'train'))
+        val_file_names = os.listdir(pjoin(json_root, 'val'))
+        train_pair_cnt = 0
         dfs = []
-        for fname in train_file_names + val_file_names:
-            json_df = pd.read_json(pjoin(json_root, fname))
+        for fname in train_file_names:
+            json_df = pd.read_json(pjoin(json_root, 'train', fname))
             dfs.append(json_df)
-        pairs = pd.concat(dfs, ignore_index=True)
-        queries = pd.unique(pairs['query'])
-        qids = {queries[qid]: qid for qid in range(1, len(queries)+1)}
-        queries = pd.DataFrame({'qid': queries.apply(qids), 'query':queries})
+            train_pair_cnt += len(json_df)
+        for fname in val_file_names:
+            json_df = pd.read_json(pjoin(json_root, 'val', fname))
+            dfs.append(json_df)
+        pairs = pd.concat(dfs).reset_index(drop=True)
+        pairs['docno'] = pairs['docno'].astype('str')
+        queries = list(pd.unique(pairs['query']))
+        qids = {queries[qid-1]: qid for qid in range(1, len(queries)+1)}
+        queries = pd.DataFrame({'qid': list(qids.values()), 'query': list(qids.keys())})
         base_df = self._do_recall(queries)
         data = pairs.merge(base_df, how='left', on=['docno', 'query'])
         data = data.merge(self.doc_embeddings, how='left', on='docno')
-        return data[: len(train_file_names)], data[len(train_file_names) :]
+        return data[:train_pair_cnt], data[train_pair_cnt:]
 
     def _build_model(self, model_path):
         if not os.path.exists(model_path):
-            if os.path.exists('./gbm.save'):
-                model_path = './gbm.save'
+            if os.path.exists('./gbm_save.pkl'):
+                model_path = './gbm_save.pkl'
             else:
                 raise FileNotFoundError('Saved model is not found! ' + model_path)
-        else:
-            self.model = lgb.load(model_path)
+        with open(model_path, 'rb') as f:
+            self.model = pkl.load(f)
+        print('Pretrained Model Loaded!')
 
-    def _train(self, json_root):
+    def _train(self, json_root, model_path):
         # load the training pair-doc pairs from the jsons
-        train_data, val_data = self._get_training_data(json_root)
-        train_data, val_data = self._merge_meta_data(train_data), self._merge_meta_data(val_data)
-        train_fe = FeatureExtractor(train_data, self.indexes, self.wv, self.user_args, True)
-        train_features = train_fe.get_features()
-        val_fe = FeatureExtractor(val_data, self.indexes, self.wv, self.user_args, True)
-        val_features = val_fe.get_features()
+        if os.path.exists('./gbm_features.pkl'):
+            with open('./gbm_features.pkl', 'rb') as f:
+                feature_dic = pkl.load(f)
+                train_features, val_features = feature_dic['train'], feature_dic['val']
+        else:
+            print('Start Getting Training Data For LGBM!')
+            train_data, val_data = self._get_training_data(json_root)
+            print('Training Data Loaded!')
+            train_data, val_data = self._merge_meta_data(train_data), self._merge_meta_data(val_data)
+            train_fe = FeatureExtractor(train_data, self.indexes, self.wv, self.user_args, is_training=True)
+            train_features = train_fe.get_features()
+            print('Training Data Set Feature Extracted!')
+            val_fe = FeatureExtractor(val_data, self.indexes, self.wv, self.user_args, is_training=True)
+            val_features = val_fe.get_features()
+            print('Validation Data Set Feature Extracted!')
+            with open('./gbm_features.pkl', 'wb') as f:
+                feature_dic = {'train': train_features, 'val': val_features}
+                pkl.dump(feature_dic, f)
 
-        self.model.fit(train_features['features'],
-                       train_features['label'],
-                       group=train_features['qid'].groupby('qid')['qid'].count().to_numpy(),
-                       eval_set=[(val_features['features'], val_features['label'])],
-                       eval_group=val_features['qid'].groupby('qid')['qid'].count().to_numpy(),
-                       eval_at=[10, 20, 50]
+        # split val set
+        # eval_qids = list(np.unique(val_features['qid']))
+        # eval_group = []
+        # eval_sets = []
+        # for i in range(len(eval_qids)):
+        #     qid = eval_qids[i]
+        #     idx = val_features['qid'] == qid
+        #     eval_sets.append((
+        #         np.array(val_features['features'][idx].values.tolist()),
+        #         np.array(val_features['label'][idx].values.tolist()))
+        #     )
+        #     eval_group.append(sum(idx))
+
+        print('Start Training!')
+        self.model.fit(np.array(train_features['features'].values.tolist()),
+                       np.array(train_features['label'].values.tolist()),
+                       group=train_features.groupby('qid')['qid'].count().to_numpy(),
+                       eval_set=[
+                           (np.array(val_features['features'].values.tolist()),
+                            np.array(val_features['label'].values.tolist()))
+                        ],
+                       eval_group=[val_features.groupby('qid')['qid'].count().to_numpy()],
+                       eval_at=[10, 20],
+                       eval_metric='ndcg'
         )
 
-        self.model.save_model('./gbm.save')
+        print('Done Training! Saving Model ... ')
+        with open(model_path, 'wb') as f:
+            pkl.dump(self.model, f)
+        print('Done!')
 
     def _merge_meta_data(self, rank_results):
         return rank_results.merge(self.doc_text, how='left', on='docno')
@@ -304,6 +345,7 @@ class PaperRetrieval():
         # l2r inference: use l2r model to rank the documents
         if not isinstance(query, str):
             raise TypeError(f'Expected input type of str, get input {type(query)}')
+        self.user_args = self.const_user_args.copy()
         self.user_args.update(args)
         query = self._spelling_correct(query)
         query_df = pd.DataFrame({'qid': [1], 'query': [query]})
@@ -312,16 +354,18 @@ class PaperRetrieval():
         rank_results = self._merge_meta_data(recall_results)
         if not self.user_args['no_l2r']:
             feature_extractor = FeatureExtractor(rank_results, self.indexes, self.wv, self.user_args)
-            feats = feature_extractor.get_features()
-            preds = self.model.predict(feats)
-            sort_idx = np.argsort(preds)[::-1]
-            rank_results = rank_results[sort_idx].reset_index(drop=True)
+            feats = feature_extractor.get_features()['features']
+            preds = self.model.predict(np.array(feats.tolist()))
+            sort_idx = np.argsort(preds)[::-1].astype('int32')
+            rank_results = rank_results.iloc[sort_idx, :].reset_index(drop=True)
         
         return rank_results[['docno', 'title', 'authors', 'abstract']]
 
 if __name__ == '__main__':
     args = {
-        'no_l2r': True
+        'no_l2r': False
     }
-    ir = PaperRetrieval(index_root='./index', wv_path='./word2vec.wv', embedding_path='./word2vec_embedding_df.csv', args=args)
+    ir = PaperRetrieval(index_root='./index', wv_path='./word2vec.wv',
+                        embedding_path='./word2vec_embedding_df.csv', json_path='./training_json/',
+                        model_path='./gbm_save.pkl', args=args)
     print(ir.search('batch normalization')[:10])
