@@ -1,5 +1,6 @@
 import os
 import re
+import copy
 import numpy as np
 import pandas as pd
 import pyterrier as pt
@@ -15,6 +16,9 @@ from lightgbm import LGBMRanker
 
 
 FIELDS = ['title', 'abstract', 'subsections', 'authors']
+
+class EmptyRetrievalError(Exception):
+    pass
 
 class FeatureExtractor():
     def __init__(self, df, indexes, word2vec, user_args={}, is_training=False):
@@ -178,7 +182,7 @@ class PaperRetrieval():
             'recall_weights': [0.5, 0.4, 0.1, 1]
         }
         self.const_user_args.update(args)
-        self.user_args = self.const_user_args.copy()
+        self.user_args = copy.deepcopy(self.const_user_args)
 
         if not self.user_args['no_l2r']:
             if model_path != '' and os.path.exists(model_path):
@@ -345,11 +349,15 @@ class PaperRetrieval():
         # l2r inference: use l2r model to rank the documents
         if not isinstance(query, str):
             raise TypeError(f'Expected input type of str, get input {type(query)}')
-        self.user_args = self.const_user_args.copy()
+        self.user_args = copy.deepcopy(self.const_user_args)
         self.user_args.update(args)
         query = self._spelling_correct(query)
         query_df = pd.DataFrame({'qid': [1], 'query': [query]})
-        recall_results = self._recall_post_processing(self._do_recall(query_df))
+        bm25_results = self._do_recall(query_df)
+        try:
+            recall_results = self._recall_post_processing(bm25_results)
+        except KeyError as e:
+            raise EmptyRetrievalError
         
         rank_results = self._merge_meta_data(recall_results)
         if not self.user_args['no_l2r']:
