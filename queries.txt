@@ -1,60 +1,20 @@
-Vision Transformer
-unsupervised representation learning
-representation learning of point clouds
-graph neural networks
-self-attention mechanism
-scalable neural networks
-3d reconstruction nerf
-generative models stylegan
-image classification residual networks
-mask instance segmentation
-egocentric video
-adversarial example attack blackbox
-style transfer painting
-image inpainting generative
-partial point cloud registration
-model interpretability gradient based
-pixel-wise learning
-robustness of convolutional neural networks
-human-object interaction
-semi supervised learning in classification
-MLP-Mixer architecture
 super resolution gan
-agent learn environment affordance
-spatial temporal data mining
-siamase architecture
+spatial temporal convolutional networks
 masked facial recognition
-momentum contrast
-non-local neural network
-feature pyramid network
+non local neural network
 deep image matting
-Kaiming He
-knowledge distillation with quantized neural networks
-densely connected network
+knowledge distillation with model compression
 group normalization
-segmentation as rendering
-optimization for non-negative matrix factorization
-shelf-supervised mesh
-Robust Convolutional Neural Networks
-large vocabulary instance segmentation
-neural networks and differential equations
-point cloud transformer
+optimization for non negative matrix factorization
+Robust Graph Neural Networks
+invertible neural networks
 label smoothing
-randomly wired neural networks
-multi-task learning with attention
-selective entropy optimization via committee consistency
+multi task learning with attention
 classification of imbalanced data
-Justin Johnson
-real-time object detection
-pixel-aligned implicit function
+real time object detection
 embedding for few-shot learning
-learning 3d reconstruction in function space
 generating video from images and sound
-part attention regressor
-Free-Form Image Inpainting with Gated Convolution
-transferring visual representations
+Free Form Image Inpainting with Gated Convolution
 Wasserstein GAN
-indoor scene segmentation
-Dense-Scale Feature Learning in Person Re-Identification
-rate reduction
+Dense Scale Feature Learning in Person Re Identification
 deep reinforcement learning

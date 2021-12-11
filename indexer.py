@@ -237,9 +237,11 @@ class PaperRetrieval():
         # filter invalid documents
         # take only top 50 documents for l2r
         # remember to join with the embeddings
+        # time filter
         filter_idx1 = self.doc_text['year'] >= self.user_args['start_year']
         filter_idx2 = self.doc_text['year'] <= self.user_args['end_year']
         filter_idx = np.bitwise_and(filter_idx1, filter_idx2)
+        # conference filter
         if self.user_args['conference'] is not None:
             filter_idx3 = self.doc_text['conference'].apply(lambda r: self.user_args['conference'] == r['conference'], axis=1)
             filter_idx = np.bitwise_and(filter_idx, filter_idx3)
