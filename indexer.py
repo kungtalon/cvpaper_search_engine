@@ -12,7 +12,7 @@ from nltk.tokenize import word_tokenize
 from gensim.models import KeyedVectors
 from os.path import join as pjoin
 from spelling_corrector import SpellingCorrector
-from lightgbm import LGBMRanker
+import lightgbm as lgb
 
 
 FIELDS = ['title', 'abstract', 'subsections', 'authors']
@@ -119,6 +119,8 @@ class FeatureExtractor():
             (pt.apply.doc_score(lambda row: int(row["workshop"]!='')))
             **
             (pt.apply.doc_score(lambda row: int(row["supp_link"]!='')))
+            **
+            (pt.apply.doc_score(lambda row: row['score']))
         )
         res = pipeline.transform(self.data)['features']
         return res
@@ -179,7 +181,8 @@ class PaperRetrieval():
             'start_year': 0,
             'end_year': 9999,
             'must_have_supp': False,
-            'recall_weights': [0.5, 0.4, 0.1, 1]
+            'recall_weights': [0.5, 0.4, 0.1, 1],
+            'wmodel': 'BM25'
         }
         self.const_user_args.update(args)
         self.user_args = copy.deepcopy(self.const_user_args)
@@ -188,17 +191,18 @@ class PaperRetrieval():
             if model_path != '' and os.path.exists(model_path):
                 self._build_model(model_path)
             else:
-                self.model = LGBMRanker(
+                self.model = lgb.LGBMRanker(
                     task="train",
                     silent=True,
                     min_child_samples=1,
                     num_leaves=24,
-                    max_depth=4,
+                    max_depth=5,
                     objective="lambdarank",
                     metric="ndcg",
-                    learning_rate= 0.1,
+                    learning_rate= 0.064,
                     importance_type="gain",
-                    num_iterations=100
+                    num_iterations=150,
+                    subsample=0.8
                 )
                 self._train(json_path, model_path)
 
@@ -213,7 +217,7 @@ class PaperRetrieval():
         for i, field in enumerate(FIELDS):
             if not self.user_args['search_' + field]:
                 continue
-            br = pt.BatchRetrieve(self.indexes[field], wmodel="BM25")
+            br = pt.BatchRetrieve(self.indexes[field], wmodel=self.user_args['wmodel'])
             result = br.transform(query)
             result['score'] *= self.user_args['recall_weights'][i]
             results.append(result)
@@ -280,12 +284,11 @@ class PaperRetrieval():
 
     def _build_model(self, model_path):
         if not os.path.exists(model_path):
-            if os.path.exists('./gbm_save.pkl'):
-                model_path = './gbm_save.pkl'
+            if os.path.exists('./gbm_save.lgb'):
+                model_path = './gbm_save.lgb'
             else:
                 raise FileNotFoundError('Saved model is not found! ' + model_path)
-        with open(model_path, 'rb') as f:
-            self.model = pkl.load(f)
+        self.model = lgb.Booster(model_file=model_path)
         print('Pretrained Model Loaded!')
 
     def _train(self, json_root, model_path):
@@ -331,13 +334,14 @@ class PaperRetrieval():
                             np.array(val_features['label'].values.tolist()))
                         ],
                        eval_group=[val_features.groupby('qid')['qid'].count().to_numpy()],
-                       eval_at=[10, 20],
+                       eval_at=[5, 10, 20],
                        eval_metric='ndcg'
         )
 
         print('Done Training! Saving Model ... ')
-        with open(model_path, 'wb') as f:
-            pkl.dump(self.model, f)
+        # with open(model_path, 'wb') as f:
+        #     pkl.dump(self.model, f)
+        self.model.booster_.save_model(filename=model_path, num_iteration=self.model.best_iteration_)
         print('Done!')
 
     def _merge_meta_data(self, rank_results):
@@ -358,7 +362,7 @@ class PaperRetrieval():
         bm25_results = self._do_recall(query_df)
         try:
             recall_results = self._recall_post_processing(bm25_results)
-        except KeyError as e:
+        except KeyError:
             raise EmptyRetrievalError
         
         rank_results = self._merge_meta_data(recall_results)
@@ -377,5 +381,5 @@ if __name__ == '__main__':
     }
     ir = PaperRetrieval(index_root='./index', wv_path='./word2vec.wv',
                         embedding_path='./word2vec_embedding_df.csv', json_path='./training_json/',
-                        model_path='./gbm_save.pkl', args=args)
+                        model_path='./gbm_save.lgb', args=args)
     print(ir.search('batch normalization')[:10])
