@@ -17,7 +17,7 @@ WEIGHTS = {
     'subsections': 0.1,
     'authors': 1
 }
-SAMPLE_INDEXES = [i for start, end in [[0,50]] for i in range(start, end)]
+#SAMPLE_INDEXES = [i for start, end in [[0,50]] for i in range(start, end)]
 
 def load_df_pickle(path):
     with open(path, 'rb') as f:
@@ -90,7 +90,8 @@ def annotate(data, queries, indexes):
         if os.path.exists(fname):
             continue
         docs = retrieve(query, indexes, WEIGHTS)
-        candidates = docs.iloc[SAMPLE_INDEXES]
+        #candidates = docs.iloc[SAMPLE_INDEXES]
+        candidates = docs.iloc[:50]
         candidates_detail = candidates.merge(data, on='docno')
         json_list = []
         labels = []

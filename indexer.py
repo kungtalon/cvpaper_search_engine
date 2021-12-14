@@ -2,6 +2,7 @@ import os
 import re
 import copy
 import numpy as np
+from numpy.lib.function_base import select
 import pandas as pd
 import pyterrier as pt
 import pickle as pkl
@@ -13,6 +14,9 @@ from gensim.models import KeyedVectors
 from os.path import join as pjoin
 from spelling_corrector import SpellingCorrector
 import lightgbm as lgb
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import ndcg_score
+import test
 
 
 FIELDS = ['title', 'abstract', 'subsections', 'authors']
@@ -65,7 +69,26 @@ class FeatureExtractor():
             features[feature_name] = feature_transform()
         
         self.data['features'] = features.apply(lambda x: np.concatenate(x.values), axis=1)
-        
+
+        if 'feat_selection' in self.user_args and self.user_args['feat_selection'] > 0:
+            # the indexes of features ordered by the feature importance in lgbm
+            idx = [22, 2, 12, 1, 13, 0, 5, 7, 9, 4, 3, 10, 6, 15, 8, 14, 18, 16, 11, 19, 21, 20, 17, 23]
+            if self.user_args['feat_selection'] == 250:
+                select_idx = idx[:5]
+            elif self.user_args['feat_selection'] == 200:
+                select_idx = idx[:8]
+            elif self.user_args['feat_selection'] == 150:
+                select_idx = idx[:11]
+            elif self.user_args['feat_selection'] == 100:
+                select_idx = idx[:15]
+            elif self.user_args['feat_selection'] == 222:
+                select_idx = idx[:9] + idx[11:]
+                # [0.7672693681612002, 0.7792444976895054, 0.7943256845126212]
+            elif self.user_args['feat_selection'] == 333:
+                select_idx = idx[:8] + idx[8:]
+                # [0.7858427339937082, 0.7572978824832088, 0.7844603685474677]
+            self.data['features'] = pd.Series(np.array(self.data['features'].values.tolist())[:, select_idx].tolist())
+
         if self.is_training:
             return self.data[['qid', 'docno', 'features', 'label']]
         return self.data[['docno', 'features']]
@@ -182,7 +205,8 @@ class PaperRetrieval():
             'end_year': 9999,
             'must_have_supp': False,
             'recall_weights': [0.5, 0.4, 0.1, 1],
-            'wmodel': 'BM25'
+            'wmodel': 'BM25',
+            'rerank': 'lgb'
         }
         self.const_user_args.update(args)
         self.user_args = copy.deepcopy(self.const_user_args)
@@ -191,19 +215,32 @@ class PaperRetrieval():
             if model_path != '' and os.path.exists(model_path):
                 self._build_model(model_path)
             else:
-                self.model = lgb.LGBMRanker(
-                    task="train",
-                    silent=True,
-                    min_child_samples=1,
-                    num_leaves=24,
-                    max_depth=5,
-                    objective="lambdarank",
-                    metric="ndcg",
-                    learning_rate= 0.064,
-                    importance_type="gain",
-                    num_iterations=150,
-                    subsample=0.8
-                )
+                if self.user_args['rerank'] == 'lgb':
+                    self.model = lgb.LGBMRanker(
+                        task="train",
+                        silent=True,
+                        min_child_samples=1,
+                        num_leaves=24,
+                        max_depth=5,
+                        objective="lambdarank",
+                        metric="ndcg",
+                        learning_rate= 0.064,
+                        importance_type="gain",
+                        num_iterations=150,
+                        subsample=0.8
+                    )
+                elif self.user_args['rerank'] == 'logistic':
+                    self.model = LogisticRegression(penalty='l2', C=1.0)
+                elif self.user_args['rerank'] == 'lgbc':
+                    self.model = lgb.LGBMClassifier(
+                        max_depth=5,
+                        learning_rate=0.6,
+                        min_child_samples=1,
+                        subsample=0.8,
+                        max_leaves=24
+                    )
+                else:
+                    raise ValueError('Wrong config for rerank model!')
                 self._train(json_path, model_path)
 
     def _init_pt(self):
@@ -283,13 +320,33 @@ class PaperRetrieval():
         return data[:train_pair_cnt], data[train_pair_cnt:]
 
     def _build_model(self, model_path):
-        if not os.path.exists(model_path):
-            if os.path.exists('./gbm_save.lgb'):
-                model_path = './gbm_save.lgb'
-            else:
-                raise FileNotFoundError('Saved model is not found! ' + model_path)
-        self.model = lgb.Booster(model_file=model_path)
+        if self.user_args['rerank'] in ['lgb']:
+            if not os.path.exists(model_path):
+                if os.path.exists('./gbm_save.lgb'):
+                    model_path = './gbm_save.lgb'
+                else:
+                    raise FileNotFoundError('Saved model is not found! ' + model_path)
+            self.model = lgb.Booster(model_file=model_path)
+        else:
+            with open(model_path, 'rb') as f:
+                self.model = pkl.load(f)
         print('Pretrained Model Loaded!')
+
+    def _feature_normalize(self, features, stats_path='normed_features.npy', training=True):
+        # features: numpy array [n, d]
+        if training and os.path.exists(stats_path):
+            stats = np.load(stats_path)
+            mu, sigma = stats[0], stats[1]
+        else:
+            mu = np.mean(features, axis=0)
+            sigma = np.std(features, axis=0)
+            assert len(mu) == len(sigma)
+            stats = np.concatenate([mu[None,:], sigma[None,:]], axis=0)
+            np.save(stats_path, stats)
+        sigma[sigma == 0] = 1
+        features -= mu.reshape(1, -1)
+        features /= sigma.reshape(1, -1)
+        return features
 
     def _train(self, json_root, model_path):
         # load the training pair-doc pairs from the jsons
@@ -298,7 +355,7 @@ class PaperRetrieval():
                 feature_dic = pkl.load(f)
                 train_features, val_features = feature_dic['train'], feature_dic['val']
         else:
-            print('Start Getting Training Data For LGBM!')
+            print('Start Getting Training Data!')
             train_data, val_data = self._get_training_data(json_root)
             print('Training Data Loaded!')
             train_data, val_data = self._merge_meta_data(train_data), self._merge_meta_data(val_data)
@@ -308,40 +365,48 @@ class PaperRetrieval():
             val_fe = FeatureExtractor(val_data, self.indexes, self.wv, self.user_args, is_training=True)
             val_features = val_fe.get_features()
             print('Validation Data Set Feature Extracted!')
-            with open('./gbm_features.pkl', 'wb') as f:
-                feature_dic = {'train': train_features, 'val': val_features}
-                pkl.dump(feature_dic, f)
-
-        # split val set
-        # eval_qids = list(np.unique(val_features['qid']))
-        # eval_group = []
-        # eval_sets = []
-        # for i in range(len(eval_qids)):
-        #     qid = eval_qids[i]
-        #     idx = val_features['qid'] == qid
-        #     eval_sets.append((
-        #         np.array(val_features['features'][idx].values.tolist()),
-        #         np.array(val_features['label'][idx].values.tolist()))
-        #     )
-        #     eval_group.append(sum(idx))
+            # with open('./gbm_features.pkl', 'wb') as f:
+            #     feature_dic = {'train': train_features, 'val': val_features}
+            #     pkl.dump(feature_dic, f)
 
         print('Start Training!')
-        self.model.fit(np.array(train_features['features'].values.tolist()),
-                       np.array(train_features['label'].values.tolist()),
-                       group=train_features.groupby('qid')['qid'].count().to_numpy(),
-                       eval_set=[
-                           (np.array(val_features['features'].values.tolist()),
-                            np.array(val_features['label'].values.tolist()))
-                        ],
-                       eval_group=[val_features.groupby('qid')['qid'].count().to_numpy()],
-                       eval_at=[5, 10, 20],
-                       eval_metric='ndcg'
-        )
+        if self.user_args['rerank'] in ['lgb']:
+            self.model.fit(np.array(train_features['features'].values.tolist()),
+                        np.array(train_features['label'].values.tolist()),
+                        group=train_features.groupby('qid')['qid'].count().to_numpy(),
+                        eval_set=[
+                            (np.array(val_features['features'].values.tolist()),
+                                np.array(val_features['label'].values.tolist()))
+                            ],
+                        eval_group=[val_features.groupby('qid')['qid'].count().to_numpy()],
+                        eval_at=[5, 10, 20],
+                        eval_metric='ndcg'
+            )
+        else:
+            train_feats = self._feature_normalize(np.array(train_features['features'].values.tolist()), training=True)
+            val_feats = self._feature_normalize(np.array(val_features['features'].values.tolist()), training=False)
+            train_label = (np.array(train_features['label'].values.tolist()) >= 3).astype('int32')
+            val_label = np.array(val_features['label'].values.tolist())
+            self.model.fit(train_feats, train_label)
+            val_preds = self.model.predict_proba(val_feats)[:, 1]
+            # import pdb; pdb.set_trace()
+            groups = val_features.groupby('qid')['qid'].count().to_numpy()
+            cur_g = 0
+            val_ndcg = 0
+            for cnt in groups:
+                val_ndcg += ndcg_score(val_label[cur_g:cur_g+cnt].reshape(1,-1), val_preds[cur_g:cur_g+cnt].reshape(1,-1))
+                cur_g += cnt
+            print('validation ndcg: %.4f' % (val_ndcg / len(groups)))
 
         print('Done Training! Saving Model ... ')
         # with open(model_path, 'wb') as f:
         #     pkl.dump(self.model, f)
-        self.model.booster_.save_model(filename=model_path, num_iteration=self.model.best_iteration_)
+        if model_path:
+            if self.user_args['rerank'] == 'lgb':
+                self.model.booster_.save_model(filename=model_path, num_iteration=self.model.best_iteration_)
+            elif self.user_args['rerank'] == 'logistic':
+                with open(model_path, 'wb') as f:
+                    pkl.dump(self.model, f)
         print('Done!')
 
     def _merge_meta_data(self, rank_results):
@@ -368,8 +433,10 @@ class PaperRetrieval():
         rank_results = self._merge_meta_data(recall_results)
         if not self.user_args['no_l2r']:
             feature_extractor = FeatureExtractor(rank_results, self.indexes, self.wv, self.user_args)
-            feats = feature_extractor.get_features()['features']
-            preds = self.model.predict(np.array(feats.tolist()))
+            feats = np.array(feature_extractor.get_features()['features'].tolist())
+            if self.user_args['rerank'] not in ['lgb']:
+                feats = self._feature_normalize(feats)
+            preds = self.model.predict(feats)
             sort_idx = np.argsort(preds)[::-1].astype('int32')
             rank_results = rank_results.iloc[sort_idx, :].reset_index(drop=True)
         
@@ -377,9 +444,10 @@ class PaperRetrieval():
 
 if __name__ == '__main__':
     args = {
-        'no_l2r': False
+        'no_l2r': False,
+        'rerank': 'lgb'
     }
-    ir = PaperRetrieval(index_root='./index', wv_path='./word2vec.wv',
-                        embedding_path='./word2vec_embedding_df.csv', json_path='./training_json/',
-                        model_path='./gbm_save.lgb', args=args)
-    print(ir.search('batch normalization')[:10])
+    ir = PaperRetrieval(index_root='./index', wv_path='./word2vec_384.wv',
+                        embedding_path='./word2vec_embedding_df_384.csv', json_path='./training_json/',
+                        model_path='./gbm_384.pkl', args=args)
+    test.test(ir)
