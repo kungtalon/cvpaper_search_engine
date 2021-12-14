@@ -447,7 +447,7 @@ if __name__ == '__main__':
         'no_l2r': False,
         'rerank': 'lgb'
     }
-    ir = PaperRetrieval(index_root='./index', wv_path='./word2vec_384.wv',
-                        embedding_path='./word2vec_embedding_df_384.csv', json_path='./training_json/',
-                        model_path='./gbm_384.pkl', args=args)
+    ir = PaperRetrieval(index_root='./index', wv_path='./word2vec_256.wv',
+                        embedding_path='./word2vec_embedding_df_256.csv', json_path='./training_json/',
+                        model_path='./gbm_256.model', args=args)
     test.test(ir)

@@ -5,6 +5,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from collections import Counter
 from sklearn.metrics import ndcg_score
+import warnings
+
+warnings.simplefilter("ignore")
 
 def get_retrieval_iterator(results):
     info = []
@@ -169,4 +172,4 @@ def plot_hyperparameters():
     plt.show()
 
 if __name__ == '__main__':
-    plot_hyperparameters()
+    test_iter()
