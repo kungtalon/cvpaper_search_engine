@@ -4,6 +4,16 @@ Information Retrieval Project
 
 
 
+requirements:
+
+gensim 4.1.2
+
+pyterrier 0.7.1
+
+nltk 3.6.5
+
+
+
 To search for a computer vision paper, simply run test,py:
 
 ```
