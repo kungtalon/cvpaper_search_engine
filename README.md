@@ -2,6 +2,9 @@
 Information Retrieval Project
 2021Fall
 
+Download word2vec model files:
+https://drive.google.com/file/d/1ec7KeffVBhjiPyISFHEfZ4yqteXMCX0t/view?usp=sharing
+https://drive.google.com/file/d/1XqWEoM4AlNHKYvh4ELzj6FX3VcfMHTWQ/view?usp=sharing
 
 
 requirements:
